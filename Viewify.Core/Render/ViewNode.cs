@@ -178,13 +178,6 @@ public class ViewNode
         // this makes this update rational
         UpdateContext(oldView, newFiber.Parent);
         Record.InitializeContext(oldView, Context);
-
-        // Wire phase: run before-update effects
-        var hasChange = Record.CompareAndCalculateEffectDependencies(oldView, _effectDeps, _effectDepChanged);
-        if (hasChange)
-        {
-            Record.ExecuteWireEffects(oldView, _effectDepChanged);
-        }
     }
 
     public void OnUpdate(Fiber<ViewNode> oldFiber, Fiber<ViewNode> newFiber)
@@ -202,16 +195,24 @@ public class ViewNode
         // and the new fiber is not necessarily applied at that point
         Record.MigrateStateFiberNodes(oldView, newFiber);
 
+        // compare & calc effect deps once for all three dep-based phases
+        var hasChange = Record.CompareAndCalculateEffectDependencies(oldView, _effectDeps, _effectDepChanged);
+        if (hasChange)
+        {
+            // Wire phase: before native view update
+            Record.ExecuteWireEffects(oldView, _effectDepChanged);
+        }
+
         if (newFiber.Content.View is NativeView nativeView)
         {
             nativeView.Update(Scheduler.Handler);
         }
 
-        // Layout phase: compare deps and run layout + async effects
-        var hasChange = Record.CompareAndCalculateEffectDependencies(oldView, _effectDeps, _effectDepChanged);
         if (hasChange)
         {
+            // Layout phase: after native view update
             Record.ExecuteEffects(oldView, _effectDepChanged);
+            // Async phase: fire-and-forget after layout
             Record.ExecuteAsyncEffects(oldView, _effectDepChanged);
         }
     }
