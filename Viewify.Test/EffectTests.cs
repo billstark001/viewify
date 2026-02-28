@@ -178,8 +178,12 @@ public class EffectTests
         view.Counter %= 5;
         Drain(s);
 
-        // Give async time to run (it's synchronous in this test since Task.Run is fire-and-forget)
-        Thread.Sleep(50);
-        Assert.True(view.AsyncLog.Count > before);
+        // Poll for the async effect to complete (it's fire-and-forget via Task.Run).
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (view.AsyncLog.Count <= before && DateTime.UtcNow < deadline)
+            Thread.Sleep(10);
+
+        Assert.True(view.AsyncLog.Count > before,
+            "Async effect did not run within the expected time window.");
     }
 }

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- GTK3 bindings for Viewify. Requires the native GTK3 library at runtime:
+         Linux:   sudo apt install libgtk-3-0
+         macOS:   brew install gtk+3
+         Windows: install GTK3 via the MSYS2/vcpkg package or download
+                  GtkSharp.Dependencies from NuGet. -->
+    <TargetFrameworks>net6.0;net8.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- GtkSharp wraps GTK3 (3.24.x). For GTK4 use the Gtk4Sharp package
+         (separate NuGet, API differences noted in GtkNativeHandler.cs). -->
+    <PackageReference Include="GtkSharp" Version="3.24.24.95" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Viewify.Base\Viewify.Base.csproj" />
+    <ProjectReference Include="..\Viewify.Core\Viewify.Core.csproj" />
+  </ItemGroup>
+
+</Project>
