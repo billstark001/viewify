@@ -395,10 +395,12 @@ public sealed class Scheduler
         {
             var cursor = _wipRoot.Parent.Child;
             Fiber<ViewNode>? prev = null;
+            bool found = false;
             while (cursor != null)
             {
                 if (cursor == _renderRoot)
                 {
+                    found = true;
                     if (prev == null)
                     {
                         _wipRoot.Parent.Child = _wipRoot;
@@ -414,7 +416,10 @@ public sealed class Scheduler
                 prev = cursor;
                 cursor = cursor.Sibling;
             }
-            throw new InvalidDataException();
+            if (!found)
+            {
+                throw new InvalidDataException("Render root not found in parent's child list.");
+            }
         }
 
         // mark state

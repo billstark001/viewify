@@ -112,7 +112,7 @@ public static class StatefulClassRecordHandlers
         return hasChange;
     }
 
-    // effect
+    // effect dependency comparison
     public static bool CompareAndCalculateEffectDependencies(this StatefulClassRecord record, IStateful? source, object?[] destination, bool[] changed)
     {
         bool hasChange = false;
@@ -157,6 +157,9 @@ public static class StatefulClassRecordHandlers
         return hasChange;
     }
 
+    // ── Effect execution helpers ─────────────────────────────────────────────
+
+    /// <summary>Executes all mount-phase effects on <paramref name="view"/>.</summary>
     public static void ExecuteMountEffects(this StatefulClassRecord record, IStateful? view)
     {
         foreach (var item in record.MountEffects)
@@ -164,6 +167,8 @@ public static class StatefulClassRecordHandlers
             item.Invoke(view, null);
         }
     }
+
+    /// <summary>Executes all unmount-phase effects on <paramref name="view"/>.</summary>
     public static void ExecuteUnmountEffects(this StatefulClassRecord record, IStateful? view)
     {
         foreach (var item in record.UnmountEffects)
@@ -172,15 +177,73 @@ public static class StatefulClassRecordHandlers
         }
     }
 
+    /// <summary>
+    /// Executes wire-phase effects whose dependencies have changed.
+    /// Wire effects run <em>before</em> the commit (during reconciliation).
+    /// </summary>
+    public static void ExecuteWireEffects(this StatefulClassRecord record, IStateful? view, bool[] changed)
+    {
+        ExecuteDepEffects(record.WireEffects, record.EffectDepFields, record.EffectDepProperties, view, changed);
+    }
+
+    /// <summary>
+    /// Executes layout-phase effects whose dependencies have changed.
+    /// Layout effects run <em>after</em> native views have been updated.
+    /// </summary>
     public static void ExecuteEffects(this StatefulClassRecord record, IStateful? view, bool[] changed)
+    {
+        ExecuteDepEffects(record.Effects, record.EffectDepFields, record.EffectDepProperties, view, changed);
+    }
+
+    /// <summary>
+    /// Enqueues async-phase effects whose dependencies have changed.
+    /// Each method is invoked; if the return value is a <see cref="Task"/> it
+    /// is awaited via <c>Task.Run</c> so the caller is never blocked.
+    /// </summary>
+    public static void ExecuteAsyncEffects(this StatefulClassRecord record, IStateful? view, bool[] changed)
+    {
+        int i = 0;
+        foreach (var (field, _) in record.EffectDepFields)
+        {
+            if (changed[i] && record.AsyncEffects.TryGetValue(field.Name, out var methods))
+            {
+                foreach (var m in methods)
+                {
+                    var result = m.Invoke(view, null);
+                    if (result is Task t) Task.Run(() => t);
+                }
+            }
+            ++i;
+        }
+        foreach (var (property, _) in record.EffectDepProperties)
+        {
+            if (changed[i] && record.AsyncEffects.TryGetValue(property.Name, out var methods))
+            {
+                foreach (var m in methods)
+                {
+                    var result = m.Invoke(view, null);
+                    if (result is Task t) Task.Run(() => t);
+                }
+            }
+            ++i;
+        }
+    }
+
+    // shared helper for dep-keyed effect dictionaries
+    private static void ExecuteDepEffects(
+        IDictionary<string, IList<MethodInfo>> effectDict,
+        IList<(FieldInfo, MethodInfo?)> depFields,
+        IList<(PropertyInfo, MethodInfo?)> depProperties,
+        IStateful? view,
+        bool[] changed)
     {
         int i = 0;
 
-        foreach (var (field, _) in record.EffectDepFields)
+        foreach (var (field, _) in depFields)
         {
-            if (changed[i])
+            if (changed[i] && effectDict.TryGetValue(field.Name, out var methods))
             {
-                foreach (var item in record.Effects[field.Name])
+                foreach (var item in methods)
                 {
                     item.Invoke(view, null);
                 }
@@ -188,11 +251,11 @@ public static class StatefulClassRecordHandlers
             ++i;
         }
 
-        foreach (var (property, _) in record.EffectDepProperties)
+        foreach (var (property, _) in depProperties)
         {
-            if (changed[i])
+            if (changed[i] && effectDict.TryGetValue(property.Name, out var methods))
             {
-                foreach (var item in record.Effects[property.Name])
+                foreach (var item in methods)
                 {
                     item.Invoke(view, null);
                 }
@@ -222,7 +285,7 @@ public static class StatefulClassRecordHandlers
         }
     }
 
-    // dependencies
+    // ── Dependency injection ─────────────────────────────────────────────────
 
     static void InjectDependency(
         this StatefulClassRecord record,
@@ -244,17 +307,30 @@ public static class StatefulClassRecordHandlers
         }
     }
 
+    /// <summary>
+    /// Injects all <see cref="IDependency"/> fields/properties of <paramref name="view"/>.
+    /// <list type="bullet">
+    ///   <item>If <c>[Inject]</c> attributes are present the specified
+    ///     property mappings are copied first (field/property definition pattern).</item>
+    ///   <item>Afterwards <see cref="IDependency.Derive"/> is always called so
+    ///     the dependency can derive values from its owner directly
+    ///     (interface inheritance pattern).</item>
+    /// </list>
+    /// </summary>
     public static void InjectDependencies(this StatefulClassRecord record, IStateful? view)
     {
         foreach (var (f, methods) in record.DependencyFields)
         {
-            record.InjectDependency(view, f.GetValue(view) as IStateful, methods);
+            var dep = f.GetValue(view);
+            record.InjectDependency(view, dep as IStateful, methods);
+            (dep as IDependency)?.Derive(view);
         }
         foreach (var (p, methods) in record.DependencyProperties)
         {
-            record.InjectDependency(view, p.GetValue(view) as IStateful, methods);
+            var dep = p.GetValue(view);
+            record.InjectDependency(view, dep as IStateful, methods);
+            (dep as IDependency)?.Derive(view);
         }
     }
-
-    //TODO
 }
+
