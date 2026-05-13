@@ -1,9 +1,16 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
+    <!-- Multi-target: net6.0 for the previous LTS (still widely deployed) and
+         net8.0 for the current LTS release.
+         netstandard2.0 is not supported because the framework relies on default
+         interface implementations and static interface operators (C# 11 / .NET 6+)
+         which are not available on older runtimes covered by netstandard2.0.
+         LangVersion=preview is required so that static interface operators compile
+         on net6.0 (they were experimental/preview in .NET 6, stable from .NET 7+). -->
+    <TargetFrameworks>net6.0;net8.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <LangVersion>12.0</LangVersion>
+    <LangVersion>preview</LangVersion>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 

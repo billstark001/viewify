@@ -32,11 +32,33 @@ public class StatefulClassRecord
     public IList<(FieldInfo, string)> ContextFields { get; }
     public IList<(PropertyInfo, string)> ContextProperties { get; }
 
+    // ── Effect phase collections ─────────────────────────────────────────────
 
+    /// <summary>Mount phase: run once, immediately after the first commit.</summary>
     public IList<MethodInfo> MountEffects { get; }
+
+    /// <summary>Unmount phase: run when the component leaves the tree.</summary>
     public IList<MethodInfo> UnmountEffects { get; }
+
+    /// <summary>
+    /// Wire phase (before update): run during reconciliation, keyed by
+    /// dependency name → methods to execute when that dependency changes.
+    /// </summary>
+    public IDictionary<string, IList<MethodInfo>> WireEffects { get; }
+
+    /// <summary>
+    /// Layout phase (after commit): run after native views have been updated,
+    /// keyed by dependency name → methods to execute when that dependency changes.
+    /// </summary>
     public IDictionary<string, IList<MethodInfo>> Effects { get; }
 
+    /// <summary>
+    /// Async phase: run asynchronously after all layout effects, keyed by
+    /// dependency name → methods to execute when that dependency changes.
+    /// </summary>
+    public IDictionary<string, IList<MethodInfo>> AsyncEffects { get; }
+
+    // Dependency tracking arrays – built from the union of all dep-keyed effects
     public IList<(FieldInfo, MethodInfo?)> EffectDepFields { get; }
     public IList<(PropertyInfo, MethodInfo?)> EffectDepProperties { get; }
 
@@ -46,7 +68,9 @@ public class StatefulClassRecord
 
     static bool IsValidStateDefinition(Type t)
     {
-        return t.IsAssignableTo(typeof(IState)) && t.GetGenericTypeDefinition() == typeof(IState<>);
+        return t.IsAssignableTo(typeof(IState))
+            && t.IsGenericType
+            && t.GetGenericTypeDefinition() == typeof(IState<>);
     }
 
     public StatefulClassRecord(Type type)
@@ -185,66 +209,96 @@ public class StatefulClassRecord
         DependencyFields = fDeps.AsReadOnly();
         DependencyProperties = pDeps.AsReadOnly();
 
-        // effects
+        // ── Effect scanning ──────────────────────────────────────────────────
 
-        var mountEffects = new List<MethodInfo>();
+        var mountEffects   = new List<MethodInfo>();
         var unmountEffects = new List<MethodInfo>();
-        var effects = new Dictionary<string, List<MethodInfo>>();
+        var wireEffects    = new Dictionary<string, List<MethodInfo>>();
+        var effects        = new Dictionary<string, List<MethodInfo>>();
+        var asyncEffects   = new Dictionary<string, List<MethodInfo>>();
 
-        foreach (var p in ClassType.GetMethods(F))
+        static void addToDeps(
+            Dictionary<string, List<MethodInfo>> dict,
+            IEnumerable<string> deps,
+            MethodInfo method)
         {
-            var effectAttrs = p.GetCustomAttributes<EffectAttribute>();
-            List<string> deps = [];
-            bool normalFlag = false;
-            foreach (var a in effectAttrs)
-            {
-                deps.AddRange(a.Dependencies);
-                normalFlag = true;
-            }
-            bool mountFlag = p.GetCustomAttribute<MountEffectAttribute>() != null;
-            bool unmountFlag = p.GetCustomAttribute<UnmountEffectAttribute>() != null;
-
-            if (!mountFlag && normalFlag)
-            {
-                mountFlag = true;
-            }
-
-            // records
-            if (mountFlag)
-            {
-                mountEffects.Add(p);
-            }
-            if (unmountFlag)
-            {
-                unmountEffects.Add(p);
-            }
             foreach (var dep in deps)
             {
-                var hasKey = effects.TryGetValue(dep, out var lst);
-                if (!hasKey)
+                if (!dict.TryGetValue(dep, out var lst))
                 {
                     lst = [];
-                    effects.Add(dep, lst);
+                    dict.Add(dep, lst);
                 }
-                lst!.Add(p);
+                lst.Add(method);
             }
         }
 
-        MountEffects = mountEffects.AsReadOnly();
-        UnmountEffects = unmountEffects.AsReadOnly();
-        var effects2 = new Dictionary<string, IList<MethodInfo>>();
-        foreach (var (k, v) in effects)
+        foreach (var m in ClassType.GetMethods(F))
         {
-            effects2[k] = v.AsReadOnly();
+            bool mountFlag   = m.GetCustomAttribute<MountEffectAttribute>()   != null;
+            bool unmountFlag = m.GetCustomAttribute<UnmountEffectAttribute>() != null;
+
+            // Wire effects ([WireEffect])
+            var wireAttrs = m.GetCustomAttributes<WireEffectAttribute>().ToList();
+            if (wireAttrs.Count > 0)
+            {
+                var deps = wireAttrs.SelectMany(a => a.Dependencies).ToList();
+                addToDeps(wireEffects, deps, m);
+                // Wire effects also run on mount unless [MountEffect] is already present
+                if (!mountFlag) mountFlag = true;
+            }
+
+            // Layout effects ([LayoutEffect] or legacy [Effect])
+            var layoutAttrs = m.GetCustomAttributes<LayoutEffectAttribute>().ToList();
+            var legacyAttrs = m.GetCustomAttributes<EffectAttribute>().ToList();
+            var layoutDeps  = layoutAttrs.SelectMany(a => a.Dependencies)
+                              .Concat(legacyAttrs.SelectMany(a => a.Dependencies))
+                              .ToList();
+            if (layoutDeps.Count > 0 || layoutAttrs.Count > 0 || legacyAttrs.Count > 0)
+            {
+                addToDeps(effects, layoutDeps, m);
+                if (!mountFlag) mountFlag = true;
+            }
+
+            // Async effects ([AsyncEffect])
+            var asyncAttrs = m.GetCustomAttributes<AsyncEffectAttribute>().ToList();
+            if (asyncAttrs.Count > 0)
+            {
+                var deps = asyncAttrs.SelectMany(a => a.Dependencies).ToList();
+                addToDeps(asyncEffects, deps, m);
+                if (!mountFlag) mountFlag = true;
+            }
+
+            if (mountFlag)   mountEffects.Add(m);
+            if (unmountFlag) unmountEffects.Add(m);
         }
-        Effects = effects2.ToImmutableDictionary();
 
+        MountEffects   = mountEffects.AsReadOnly();
+        UnmountEffects = unmountEffects.AsReadOnly();
 
-        // effect dependencies
+        static ImmutableDictionary<string, IList<MethodInfo>> freeze(Dictionary<string, List<MethodInfo>> d)
+        {
+            var out2 = new Dictionary<string, IList<MethodInfo>>();
+            foreach (var (k, v) in d) out2[k] = v.AsReadOnly();
+            return out2.ToImmutableDictionary();
+        }
+
+        WireEffects  = freeze(wireEffects);
+        Effects      = freeze(effects);
+        AsyncEffects = freeze(asyncEffects);
+
+        // ── Effect dependency tracking ───────────────────────────────────────
+        // Union the keys from all dep-keyed effect dictionaries
+        var allDepKeys = WireEffects.Keys
+            .Concat(Effects.Keys)
+            .Concat(AsyncEffects.Keys)
+            .Distinct()
+            .ToHashSet();
+
         List<(FieldInfo, MethodInfo?)> effectDepFields = [];
         List<(PropertyInfo, MethodInfo?)> effectDepProperties = [];
 
-        foreach (var k in Effects.Keys)
+        foreach (var k in allDepKeys)
         {
             var f = type.GetField(k, F);
             var p = type.GetProperty(k, F);
@@ -259,8 +313,8 @@ public class StatefulClassRecord
             }
         }
 
-        EffectDepFields = effectDepFields.AsReadOnly();
-        EffectDepProperties = effectDepProperties.AsReadOnly();
+        EffectDepFields      = effectDepFields.AsReadOnly();
+        EffectDepProperties  = effectDepProperties.AsReadOnly();
     }
 
 }

@@ -154,9 +154,10 @@ public class ViewNode
         }
 
         // calc effect deps
-        // execute effects for case 1 and case 2
+        // execute mount, layout and async effects on first mount
         Record.CompareAndCalculateEffectDependencies(View, _effectDeps, _effectDepChanged);
         Record.ExecuteMountEffects(View);
+        Record.ExecuteAsyncEffects(View, _effectDepChanged);
 
     }
 
@@ -194,17 +195,25 @@ public class ViewNode
         // and the new fiber is not necessarily applied at that point
         Record.MigrateStateFiberNodes(oldView, newFiber);
 
+        // compare & calc effect deps once for all three dep-based phases
+        var hasChange = Record.CompareAndCalculateEffectDependencies(oldView, _effectDeps, _effectDepChanged);
+        if (hasChange)
+        {
+            // Wire phase: before native view update
+            Record.ExecuteWireEffects(oldView, _effectDepChanged);
+        }
+
         if (newFiber.Content.View is NativeView nativeView)
         {
             nativeView.Update(Scheduler.Handler);
         }
 
-        // compare & calc effect deps
-        var hasChange = Record.CompareAndCalculateEffectDependencies(oldView, _effectDeps, _effectDepChanged);
         if (hasChange)
         {
-            // execute effects for case 2
+            // Layout phase: after native view update
             Record.ExecuteEffects(oldView, _effectDepChanged);
+            // Async phase: fire-and-forget after layout
+            Record.ExecuteAsyncEffects(oldView, _effectDepChanged);
         }
     }
 
